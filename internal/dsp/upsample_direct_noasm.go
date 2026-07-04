@@ -1,9 +1,10 @@
-//go:build !amd64
+//go:build !amd64 && !arm64
 
 package dsp
 
 // UpsampleLinePairNRGBA upsamples a pair of chroma rows and converts to NRGBA.
-// On non-amd64 platforms, this uses the pure Go implementation.
+// On platforms without an assembly implementation, this uses the pure Go
+// implementation.
 func UpsampleLinePairNRGBA(
 	topY, botY []byte,
 	topU, topV []byte,

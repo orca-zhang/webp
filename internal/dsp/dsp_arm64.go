@@ -26,6 +26,19 @@ func init() {
 	PredChroma8[2] = ve8uvNEON
 	PredChroma8[3] = he8uvNEON
 
+	// 4x4 luma prediction modes (all 10 in NEON; see PredLuma4Direct in
+	// predict_lossy_direct_arm64.go for measurements).
+	PredLuma4[0] = dc4asmNEON
+	PredLuma4[1] = tm4asmNEON
+	PredLuma4[2] = ve4asmNEON
+	PredLuma4[3] = he4asmNEON
+	PredLuma4[4] = rd4asmNEON
+	PredLuma4[5] = vr4asmNEON
+	PredLuma4[6] = ld4asmNEON
+	PredLuma4[7] = vl4asmNEON
+	PredLuma4[8] = hd4asmNEON
+	PredLuma4[9] = hu4asmNEON
+
 	// DCT transforms.
 	ITransform = iTransformNEON
 	Transform = transformTwoDecNEON
@@ -103,6 +116,36 @@ func dc8uvasmNEON(dst []byte, off int)
 
 //go:noescape
 func tm8uvasmNEON(dst []byte, off int)
+
+//go:noescape
+func dc4asmNEON(dst []byte, off int)
+
+//go:noescape
+func tm4asmNEON(dst []byte, off int)
+
+//go:noescape
+func ve4asmNEON(dst []byte, off int)
+
+//go:noescape
+func he4asmNEON(dst []byte, off int)
+
+//go:noescape
+func rd4asmNEON(dst []byte, off int)
+
+//go:noescape
+func vr4asmNEON(dst []byte, off int)
+
+//go:noescape
+func ld4asmNEON(dst []byte, off int)
+
+//go:noescape
+func vl4asmNEON(dst []byte, off int)
+
+//go:noescape
+func hd4asmNEON(dst []byte, off int)
+
+//go:noescape
+func hu4asmNEON(dst []byte, off int)
 
 //go:noescape
 func addGreenToBlueAndRedNEON(argb []uint32, numPixels int)

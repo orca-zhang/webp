@@ -41,3 +41,30 @@ func PredChroma8Direct(mode int, dst []byte, off int) {
 		dc8uvNoTopLeft(dst, off)
 	}
 }
+
+// PredLuma4Direct calls the 4x4 prediction function for the given mode directly
+// via a switch statement, avoiding indirect function call overhead.
+func PredLuma4Direct(mode int, dst []byte, off int) {
+	switch mode {
+	case 0:
+		dc4(dst, off)
+	case 1:
+		tm4(dst, off)
+	case 2:
+		ve4(dst, off)
+	case 3:
+		he4(dst, off)
+	case 4:
+		rd4(dst, off)
+	case 5:
+		vr4(dst, off)
+	case 6:
+		ld4(dst, off)
+	case 7:
+		vl4(dst, off)
+	case 8:
+		hd4(dst, off)
+	case 9:
+		hu4(dst, off)
+	}
+}

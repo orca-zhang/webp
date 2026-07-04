@@ -63,20 +63,6 @@ func getMaxItersForQuality(quality int) int {
 	return 8 + (quality*quality)/128
 }
 
-// findMatchLength returns the length of the match between array1 and array2,
-// up to maxLimit. If array1[bestLenMatch] != array2[bestLenMatch], returns 0
-// immediately as an optimization (the match can't be better than current best).
-func findMatchLength(array1, array2 []uint32, bestLenMatch, maxLimit int) int {
-	if bestLenMatch < maxLimit && array1[bestLenMatch] != array2[bestLenMatch] {
-		return 0
-	}
-	matchLen := 0
-	for matchLen < maxLimit && array1[matchLen] == array2[matchLen] {
-		matchLen++
-	}
-	return matchLen
-}
-
 // HashChain stores the hash chain for LZ77 matching.
 type HashChain struct {
 	// OffsetLength stores packed (offset, length) for each position.

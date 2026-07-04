@@ -3,6 +3,8 @@ package lossless
 // VP8L format constants derived from libwebp/src/webp/format_constants.h
 // and libwebp/src/dec/vp8l_dec.c.
 
+import "math/bits"
+
 const (
 	// VP8LMagicByte is the VP8L signature byte (0x2f).
 	VP8LMagicByte = 0x2f
@@ -200,12 +202,10 @@ func PrefixEncodeNoLUT(distance int) (code, extraBits, extraBitsValue int) {
 
 // bitsLog2Floor returns floor(log2(n)) for n > 0.
 func bitsLog2Floor(n int) int {
-	log := 0
-	for n > 1 {
-		log++
-		n >>= 1
+	if n <= 0 {
+		return 0
 	}
-	return log
+	return bits.Len(uint(n)) - 1
 }
 
 // VP8LSubSampleSize returns ceil(size / (1 << samplingBits)).

@@ -945,13 +945,16 @@ func (enc *Encoder) storeImageData(
 
 	x := 0
 	y := 0
+	txSize := 0
+	if histoBits > 0 {
+		txSize = VP8LSubSampleSize(width, histoBits)
+	}
 	for _, v := range refs.Refs() {
 		// Determine which histogram to use.
 		histoIdx := 0
 		if len(huffCodes) > 1 && histoBits > 0 {
 			tx := x >> histoBits
 			ty := y >> histoBits
-			txSize := VP8LSubSampleSize(width, histoBits)
 			symIdx := ty*txSize + tx
 			if symIdx < len(symbols) {
 				histoIdx = int(symbols[symIdx])
