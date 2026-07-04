@@ -240,15 +240,15 @@ Benchmarked on Apple M5 Max (arm64), 1536x1024 RGB image, Go 1.24.2. Median of 1
 | chai2010/webp (CGo) | Lossy | 9.4 ms | 22.4 | 6.4 MB | 23 |
 | golang.org/x/image/webp | Lossy | 17.8 ms | 10.8 | 2.5 MB | 13 |
 | gen2brain/webp (WASM) | Lossy | 21.9 ms | 11.6 | 608 KB | 40 |
-| chai2010/webp (CGo) | Lossless | **19.2 ms** | 91.5 | 10.2 MB | 30 |
-| **deepteams/webp** (Pure Go) | Lossless | **26.4 ms** | 69.2 | 7.9 MB | 225 |
-| gen2brain/webp (WASM) | Lossless | 34.1 ms | 60.2 | 4.4 MB | 46 |
-| nativewebp (Pure Go) | Lossless | 36.6 ms | 54.9 | 6.1 MB | 50 |
-| golang.org/x/image/webp | Lossless | 40.4 ms | 45.2 | 6.8 MB | 966 |
+| chai2010/webp (CGo) | Lossless | **19.5 ms** | 91.5 | 10.2 MB | 30 |
+| **deepteams/webp** (Pure Go) | Lossless | **20.0 ms** | 91.3 | 7.9 MB | 226 |
+| gen2brain/webp (WASM) | Lossless | 34.3 ms | 60.2 | 4.4 MB | 46 |
+| nativewebp (Pure Go) | Lossless | 36.7 ms | 54.9 | 6.1 MB | 50 |
+| golang.org/x/image/webp | Lossless | 39.4 ms | 45.2 | 6.8 MB | 966 |
 
 In a decode loop, [`DecodeReuse`](#decode-in-a-loop-zero-allocation) drops per-decode allocations from megabytes to a few KB (see `BenchmarkDecodeLossyReuse` / `BenchmarkDecodeLosslessReuse`).
 
-Lossy encoding uses row-pipelined parallelism that scales with available cores. Hot DSP kernels (transforms, intra predictors, loop filters, YUV upsampling) are SIMD-accelerated on both arm64 (NEON) and amd64 (SSE2/AVX2), with pure Go fallbacks everywhere else. See [`benchmark/`](benchmark/) for full methodology, 10-run statistics, and small-image results.
+Lossy encoding uses row-pipelined parallelism that scales with available cores. Hot DSP kernels (transforms, intra predictors, loop filters, YUV upsampling, lossless inverse transforms) are SIMD-accelerated on both arm64 (NEON) and amd64 (SSE2/AVX2), with pure Go fallbacks everywhere else. See [`benchmark/`](benchmark/) for full methodology, 10-run statistics, and small-image results.
 
 ```bash
 cd benchmark && go test -bench=. -benchmem -count=10 -run='^$' -timeout=30m

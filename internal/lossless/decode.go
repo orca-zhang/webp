@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/deepteams/webp/internal/bitio"
+	"github.com/deepteams/webp/internal/dsp"
 )
 
 // losslessDecoderPool caches Decoder structs between decode calls so that the
@@ -385,6 +386,18 @@ func argbToNRGBA(pixels []uint32, width, height int, reuse *image.NRGBA) *image.
 
 // argbToNRGBARows converts a range of rows from ARGB to NRGBA byte layout.
 func argbToNRGBARows(pixels []uint32, pix []byte, stride, width, yStart, yEnd int) {
+	if f := dsp.ConvertARGBToRGBABatch; f != nil {
+		if stride == width*4 {
+			// Rows are contiguous: convert the whole range in one call.
+			n := (yEnd - yStart) * width
+			f(pixels[yStart*width:yStart*width+n], pix[yStart*stride:yStart*stride+n*4], n)
+			return
+		}
+		for y := yStart; y < yEnd; y++ {
+			f(pixels[y*width:y*width+width], pix[y*stride:y*stride+width*4], width)
+		}
+		return
+	}
 	for y := yStart; y < yEnd; y++ {
 		row := pixels[y*width : y*width+width]
 		dst := pix[y*stride : y*stride+width*4]

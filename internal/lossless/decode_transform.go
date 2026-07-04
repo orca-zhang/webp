@@ -210,8 +210,12 @@ func predictorInverseTransform(t *Transform, yStart, yEnd int, in, out []uint32)
 		// Rest of first row uses predictor 1 (left pixel).
 		inRow := in[inOff : inOff+width]
 		outRow := out[outOff : outOff+width]
-		for x := 1; x < width; x++ {
-			outRow[x] = addPixels(inRow[x], outRow[x-1])
+		if f := dsp.PredictorsAdd[1]; f != nil && width > 1 {
+			f(inRow[1:width], nil, outRow[0:width], width-1)
+		} else {
+			for x := 1; x < width; x++ {
+				outRow[x] = addPixels(inRow[x], outRow[x-1])
+			}
 		}
 		inOff += width
 		outOff += width
@@ -246,6 +250,33 @@ func predictorInverseTransform(t *Transform, yStart, yEnd int, in, out []uint32)
 			xEnd := (x & ^tileMask) + tileWidth
 			if xEnd > width {
 				xEnd = width
+			}
+
+			// SIMD fast path (ARM64 NEON): batch-apply the predictor over
+			// the tile span. Modes using the top-right neighbor (3, 5, 9,
+			// 10) stop one pixel short of the row end; the last pixel (whose
+			// TR wraps to outRow[0]) falls through to the scalar switch.
+			if f := dsp.PredictorsAdd[predMode]; f != nil {
+				usesTR := predMode == 3 || predMode == 5 || predMode == 9 || predMode == 10
+				end := xEnd
+				if usesTR && end > width-1 {
+					end = width - 1
+				}
+				if n := end - x; n > 0 {
+					var up []uint32
+					if predMode >= 2 {
+						hi := end
+						if usesTR {
+							hi = end + 1
+						}
+						up = topRow[x-1 : hi]
+					}
+					f(inRow[x:end], up, outRow[x-1:end], n)
+					x = end
+				}
+				if x >= xEnd {
+					continue
+				}
 			}
 
 			// Specialized inner loops per prediction mode avoid a 14-case
@@ -476,6 +507,9 @@ func colorSpaceInverseTransform(t *Transform, yStart, yEnd int, src, dst []uint3
 	srcOff := yStart * width
 	dstOff := yStart * width
 
+	// SIMD fast path (ARM64 NEON): batch-apply the transform per tile span.
+	fBatch := dsp.TransformColorInverseBatch
+
 	for y := yStart; y < yEnd; y++ {
 		predRow := (y >> t.Bits) * tilesPerRow
 		predIdx := 0
@@ -484,10 +518,16 @@ func colorSpaceInverseTransform(t *Transform, yStart, yEnd int, src, dst []uint3
 		for x < safeWidth {
 			// Extract multipliers once per tile (int32 for inner loop).
 			colorCode := tData[predRow+predIdx]
+			predIdx++
+			if fBatch != nil {
+				fBatch(int8(colorCode), int8(colorCode>>8), int8(colorCode>>16),
+					src[srcOff+x:srcOff+x+tileWidth], dst[dstOff+x:dstOff+x+tileWidth], tileWidth)
+				x += tileWidth
+				continue
+			}
 			g2r := int32(int8(colorCode))
 			g2b := int32(int8(colorCode >> 8))
 			r2b := int32(int8(colorCode >> 16))
-			predIdx++
 
 			srcSlice := src[srcOff+x:]
 			dstSlice := dst[dstOff+x:]
@@ -511,6 +551,13 @@ func colorSpaceInverseTransform(t *Transform, yStart, yEnd int, src, dst []uint3
 		}
 		if x < width {
 			colorCode := tData[predRow+predIdx]
+			if fBatch != nil {
+				fBatch(int8(colorCode), int8(colorCode>>8), int8(colorCode>>16),
+					src[srcOff+x:srcOff+x+remainingWidth], dst[dstOff+x:dstOff+x+remainingWidth], remainingWidth)
+				srcOff += width
+				dstOff += width
+				continue
+			}
 			g2r := int32(int8(colorCode))
 			g2b := int32(int8(colorCode >> 8))
 			r2b := int32(int8(colorCode >> 16))

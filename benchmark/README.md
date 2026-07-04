@@ -48,11 +48,13 @@ All values are **medians of 10 runs** (`-count=10`). Provides more reliable stat
 
 | Library | Time (ms) | MB/s | B/op | Allocs |
 |---------|----------:|-----:|-----:|-------:|
-| chai2010/webp (CGo) | **19.2** | 91.5 | 10.2 MB | 30 |
-| **deepteams/webp** (Pure Go) | **26.4** | 69.2 | 7.9 MB | 225 |
-| gen2brain/webp (WASM) | 34.1 | 60.2 | 4.4 MB | 46 |
-| nativewebp (Pure Go) | 36.6 | 54.9 | 6.1 MB | 50 |
-| golang.org/x/image/webp | 40.4 | 45.2 | 6.8 MB | 966 |
+| chai2010/webp (CGo) | **19.5** | 91.5 | 10.2 MB | 30 |
+| **deepteams/webp** (Pure Go) | **20.0** | 91.3 | 7.9 MB | 226 |
+| gen2brain/webp (WASM) | 34.3 | 60.2 | 4.4 MB | 46 |
+| nativewebp (Pure Go) | 36.7 | 54.9 | 6.1 MB | 50 |
+| golang.org/x/image/webp | 39.4 | 45.2 | 6.8 MB | 966 |
+
+Note: each library decodes its own encoder's output. When decoding the *same* bitstream, deepteams/webp and chai2010 CGo are at statistical parity (19.8 vs 19.8 ms on the deepteams-encoded file).
 
 ### Encode Lossy Small (Quality 75, 256x256)
 
@@ -70,7 +72,7 @@ All values are **medians of 10 runs** (`-count=10`). Provides more reliable stat
 
 3. **Fastest lossy decoder overall**: deepteams/webp lossy decode (9.0ms) beats chai2010 CGo (9.4ms) thanks to NEON loop filters and predictors on arm64, and is 2.0x faster than x/image/webp and 2.4x faster than gen2brain WASM. Lowest memory (2.5 MB) and fewest allocs (7) of any decoder — and `webp.DecodeReuse` drops steady-state decode allocations to a few KB by recycling the output buffers.
 
-4. **Fastest pure Go lossless decoder**: deepteams/webp lossless decode (26.4ms) is 23% faster than gen2brain, 28% faster than nativewebp, and 35% faster than x/image — only 38% behind chai2010 CGo.
+4. **Fastest pure Go lossless decoder**: deepteams/webp lossless decode (20.0ms) is 42% faster than gen2brain, 45% faster than nativewebp, and 49% faster than x/image — within 3% of chai2010 CGo, and at statistical parity with it on identical bitstreams thanks to NEON inverse transforms (predictors, cross-color, ARGB conversion).
 
 5. **Consistent performance**: 10-run medians show deepteams/webp is stable (low variance) across lossy/lossless encoding and decoding, with only minor outliers under system contention.
 
