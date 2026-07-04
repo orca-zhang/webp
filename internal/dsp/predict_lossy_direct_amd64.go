@@ -45,29 +45,32 @@ func PredChroma8Direct(mode int, dst []byte, off int) {
 	}
 }
 
-// PredLuma4Direct calls the 4x4 prediction function for the given mode directly
-// via a switch statement, avoiding indirect function call overhead.
+// PredLuma4Direct calls the 4x4 prediction function for the given mode directly.
+// On amd64 all 10 modes dispatch to SSE2 assembly (predict4_sse2_amd64.s),
+// ported from the NEON kernels in predict_arm64.s where all 10 modes beat
+// scalar Go. libwebp ships the same kernels in SSE2 (dec_sse2.c/enc_sse2.c);
+// final performance validation should be done on real amd64 silicon.
 func PredLuma4Direct(mode int, dst []byte, off int) {
 	switch mode {
 	case 0:
-		dc4(dst, off)
+		dc4asmSSE2(dst, off)
 	case 1:
-		tm4(dst, off)
+		tm4asmSSE2(dst, off)
 	case 2:
-		ve4(dst, off)
+		ve4asmSSE2(dst, off)
 	case 3:
-		he4(dst, off)
+		he4asmSSE2(dst, off)
 	case 4:
-		rd4(dst, off)
+		rd4asmSSE2(dst, off)
 	case 5:
-		vr4(dst, off)
+		vr4asmSSE2(dst, off)
 	case 6:
-		ld4(dst, off)
+		ld4asmSSE2(dst, off)
 	case 7:
-		vl4(dst, off)
+		vl4asmSSE2(dst, off)
 	case 8:
-		hd4(dst, off)
+		hd4asmSSE2(dst, off)
 	case 9:
-		hu4(dst, off)
+		hu4asmSSE2(dst, off)
 	}
 }
