@@ -62,6 +62,79 @@ func BenchmarkEncodeLossless(b *testing.B) {
 	b.SetBytes(int64(buf.Len()))
 }
 
+// BenchmarkDecodeLossyReuse measures decode with output-buffer reuse via
+// DecodeReuse (steady-state allocations should be near zero for the image).
+func BenchmarkDecodeLossyReuse(b *testing.B) {
+	img := loadTestImage(b)
+	buf := &bytes.Buffer{}
+	if err := Encode(buf, img, &EncoderOptions{Quality: 75, Method: 4}); err != nil {
+		b.Fatal(err)
+	}
+	data := buf.Bytes()
+	var out image.Image
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = DecodeReuse(bytes.NewReader(data), out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(int64(len(data)))
+}
+
+// BenchmarkDecodeLosslessReuse is the lossless counterpart of
+// BenchmarkDecodeLossyReuse.
+func BenchmarkDecodeLosslessReuse(b *testing.B) {
+	img := loadTestImage(b)
+	buf := &bytes.Buffer{}
+	if err := Encode(buf, img, &EncoderOptions{Lossless: true, Quality: 75}); err != nil {
+		b.Fatal(err)
+	}
+	data := buf.Bytes()
+	var out image.Image
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = DecodeReuse(bytes.NewReader(data), out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(int64(len(data)))
+}
+
+// loadPaletteImage builds an image with 16 distinct colors in large flat
+// regions, representative of icons/graphics that take the palette path.
+func loadPaletteImage(b *testing.B) image.Image {
+	img := image.NewNRGBA(image.Rect(0, 0, 640, 480))
+	for y := 0; y < 480; y++ {
+		for x := 0; x < 640; x++ {
+			c := uint8((x/80 + y/120*8) % 16)
+			img.SetNRGBA(x, y, color.NRGBA{
+				R: c * 16,
+				G: 255 - c*16,
+				B: c * 8,
+				A: 255,
+			})
+		}
+	}
+	return img
+}
+
+func BenchmarkEncodeLossless_Palette(b *testing.B) {
+	img := loadPaletteImage(b)
+	buf := &bytes.Buffer{}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		if err := Encode(buf, img, &EncoderOptions{Lossless: true, Quality: 75}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(int64(buf.Len()))
+}
+
 func BenchmarkDecodeLossy(b *testing.B) {
 	img := loadTestImage(b)
 	buf := &bytes.Buffer{}

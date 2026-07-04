@@ -24,7 +24,6 @@ func acquireEncoder(width, height int, config *EncoderConfig) *Encoder {
 	enc.width = width
 	enc.height = height
 	enc.currentWidth = width
-	enc.argbOrig = nil
 	enc.transforms = enc.transforms[:0]
 	enc.usePalette = false
 	enc.paletteSize = 0
@@ -41,9 +40,10 @@ func acquireEncoder(width, height int, config *EncoderConfig) *Encoder {
 
 // releaseEncoder returns an Encoder to the pool for reuse.
 func releaseEncoder(enc *Encoder) {
-	// Clear references to image data so it can be GC'd.
-	enc.argb = nil
-	enc.argbOrig = nil
+	// enc.argb is the encoder's own copy of the pixels (never aliases the
+	// caller's slice), so it is kept for reuse: dropping it here would
+	// regenerate ~4 bytes/pixel of garbage per encode, and the GC pressure
+	// from that churn is what evicts pooled encoders in the first place.
 	enc.config = nil
 	enc.palette = nil
 	enc.transforms = enc.transforms[:0]
@@ -84,9 +84,8 @@ type Encoder struct {
 	width  int
 	height int
 
-	// ARGB pixel data (may be transformed in place).
-	argb    []uint32
-	argbOrig []uint32 // original copy for multi-pass
+	// ARGB pixel data (encoder-owned copy; may be transformed in place).
+	argb []uint32
 
 	// Transform state.
 	transforms    []Transform
@@ -539,7 +538,7 @@ func (enc *Encoder) encodeStream() ([]byte, error) {
 
 	// Get backward references (reuse buffers if available).
 	if enc.bestRefs == nil {
-		enc.bestRefs = NewBackwardRefs(pixelCount / 2)
+		enc.bestRefs = NewBackwardRefs(pixelCount / 8)
 	} else {
 		enc.bestRefs.Reset()
 	}
@@ -551,10 +550,10 @@ func (enc *Encoder) encodeStream() ([]byte, error) {
 
 	// Prepare scratch buffers for GetBackwardReferences.
 	if enc.candidateRefs == nil {
-		enc.candidateRefs = NewBackwardRefs(pixelCount / 2)
+		enc.candidateRefs = NewBackwardRefs(pixelCount / 8)
 	}
 	if enc.traceRefs == nil {
-		enc.traceRefs = NewBackwardRefs(pixelCount / 2)
+		enc.traceRefs = NewBackwardRefs(pixelCount / 8)
 	}
 	if len(enc.traceDistArray) < pixelCount {
 		enc.traceDistArray = make([]uint16, pixelCount)
@@ -714,7 +713,7 @@ func (enc *Encoder) encodeSubImage(bw *bitio.LosslessWriter, data []uint32, widt
 	// Generate backward references using LZ77 standard + RLE strategies.
 	// cache_bits = 0 (no color cache for sub-images), matching C reference.
 	if enc.candidateRefs == nil {
-		enc.candidateRefs = NewBackwardRefs(pixelCount / 2)
+		enc.candidateRefs = NewBackwardRefs(pixelCount / 8)
 	} else {
 		enc.candidateRefs.Reset()
 	}
@@ -945,13 +944,16 @@ func (enc *Encoder) storeImageData(
 
 	x := 0
 	y := 0
+	txSize := 0
+	if histoBits > 0 {
+		txSize = VP8LSubSampleSize(width, histoBits)
+	}
 	for _, v := range refs.Refs() {
 		// Determine which histogram to use.
 		histoIdx := 0
 		if len(huffCodes) > 1 && histoBits > 0 {
 			tx := x >> histoBits
 			ty := y >> histoBits
-			txSize := VP8LSubSampleSize(width, histoBits)
 			symIdx := ty*txSize + tx
 			if symIdx < len(symbols) {
 				histoIdx = int(symbols[symIdx])

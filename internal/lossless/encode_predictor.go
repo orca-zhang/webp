@@ -10,6 +10,7 @@ package lossless
 
 import (
 	"math"
+	"math/bits"
 	"runtime"
 	"sort"
 	"sync"
@@ -184,14 +185,21 @@ func predictPixel(mode int, left, top, topRight, topLeft uint32) uint32 {
 // Entropy cost estimation
 // ---------------------------------------------------------------------------
 
-// estimateEntropy returns a quick entropy estimate for a tile's prediction
-// residuals under the given predictor mode. Uses per-channel histograms
-// across all 4 ARGB channels to approximate the bit cost, matching the
-// C reference (VP8LResidualImage / PredictionCostSpatialHistogram).
+// bestPredictorForTile evaluates all candidate predictor modes for one tile
+// in a SINGLE pass over its pixels and returns the mode with the lowest
+// estimated entropy (ties resolved in favor of the lowest mode, like the
+// former per-mode loop). The entropy estimate matches the C reference
+// (VP8LResidualImage / PredictionCostSpatialHistogram): per-channel Shannon
+// entropy over the prediction residuals.
+//
+// Walking the tile once and accumulating one histogram per mode amortizes
+// the neighbour gathering across all modes instead of redoing it per mode.
+// histos is a caller-provided scratch of maxMode*4*256 bins, reused across
+// tiles by each worker.
 //
 // For tiles larger than 16x16, subsamples every 2nd row to reduce
 // predictPixel calls by 50% with negligible accuracy impact.
-func estimateEntropy(argb []uint32, width, height, tx, ty, bits, mode int) float64 {
+func bestPredictorForTile(argb []uint32, width, height, tx, ty, bits, maxMode int, histos []uint32) int {
 	tileSize := 1 << bits
 	xStart := tx * tileSize
 	yStart := ty * tileSize
@@ -210,9 +218,11 @@ func estimateEntropy(argb []uint32, width, height, tx, ty, bits, mode int) float
 		yStep = 2
 	}
 
-	// 4 histograms of 256 bins each: [0]=alpha, [1]=red, [2]=green, [3]=blue
-	// Using uint32 reduces stack from 8KB to 4KB and improves cache utilisation.
-	var histogram [4 * 256]uint32
+	// One group of 4x256 bins per mode: [0]=alpha, [1]=red, [2]=green, [3]=blue.
+	histos = histos[:maxMode*1024]
+	for i := range histos {
+		histos[i] = 0
+	}
 	count := uint32(0)
 
 	for y := yStart; y < yEnd; y += yStep {
@@ -241,17 +251,39 @@ func estimateEntropy(argb []uint32, width, height, tx, ty, bits, mode int) float
 					topRight = top
 				}
 			}
-
-			// For the first pixel (0,0) and borders, some neighbours default to 0.
-			pred := predictPixel(mode, left, top, topRight, topLeft)
-			residual := subPixels(px, pred)
-
-			// Accumulate all 4 channels into their respective histograms.
-			histogram[0*256+int((residual>>24)&0xff)]++
-			histogram[1*256+int((residual>>16)&0xff)]++
-			histogram[2*256+int((residual>>8)&0xff)]++
-			histogram[3*256+int(residual&0xff)]++
 			count++
+
+			// For the first pixel (0,0) and borders, some neighbours
+			// default to 0. Compute every mode's prediction from the same
+			// neighbours in straight-line code (no per-mode switch), sharing
+			// the avg2 subexpressions modes 5-13 have in common.
+			var preds [numPredictors]uint32
+			preds[0] = ARGBBlack
+			preds[1] = left
+			preds[2] = top
+			preds[3] = topRight
+			if maxMode > 4 {
+				preds[4] = topLeft
+				preds[5] = avg2(avg2(left, topRight), top)
+				preds[6] = avg2(left, topLeft)
+				preds[7] = avg2(left, top)
+				if maxMode > 8 {
+					preds[8] = avg2(topLeft, top)
+					preds[9] = avg2(top, topRight)
+					preds[10] = avg2(preds[6], preds[9])
+					preds[11] = selectPred(left, top, topLeft)
+					preds[12] = clampAddSubFull(left, top, topLeft)
+					preds[13] = clampAddSubHalf(preds[7], topLeft)
+				}
+			}
+			for mode := 0; mode < maxMode; mode++ {
+				residual := subPixels(px, preds[mode])
+				base := mode * 1024
+				histos[base+int((residual>>24)&0xff)]++
+				histos[base+256+int((residual>>16)&0xff)]++
+				histos[base+512+int((residual>>8)&0xff)]++
+				histos[base+768+int(residual&0xff)]++
+			}
 		}
 	}
 
@@ -262,19 +294,27 @@ func estimateEntropy(argb []uint32, width, height, tx, ty, bits, mode int) float
 	// Shannon entropy summed across all 4 channel histograms.
 	// Uses fastSLog2(n) = n*log2(n) identity:
 	//   H*count = sum_ch(fastSLog2(count) - sum_bins(fastSLog2(h_i)))
-	entropy := 0.0
-	for ch := 0; ch < 4; ch++ {
-		channelEntropy := fastSLog2(count)
-		base := ch * 256
-		for i := 0; i < 256; i++ {
-			if histogram[base+i] > 0 {
-				channelEntropy -= fastSLog2(histogram[base+i])
+	slogCount := fastSLog2(count)
+	bestMode := 0
+	bestCost := math.MaxFloat64
+	for mode := 0; mode < maxMode; mode++ {
+		entropy := 0.0
+		for ch := 0; ch < 4; ch++ {
+			channelEntropy := slogCount
+			base := mode*1024 + ch*256
+			for i := 0; i < 256; i++ {
+				if histos[base+i] > 0 {
+					channelEntropy -= fastSLog2(histos[base+i])
+				}
 			}
+			entropy += channelEntropy
 		}
-		entropy += channelEntropy
+		if entropy < bestCost {
+			bestCost = entropy
+			bestMode = mode
+		}
 	}
-
-	return entropy
+	return bestMode
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +429,9 @@ func ResidualImage(argb []uint32, width, height, bits, quality int, residualsBuf
 	}
 
 	// Phase 1: Select best predictor per tile using ORIGINAL pixels.
-	// estimateEntropy reads from argb but never modifies it, so all tiles
-	// can be evaluated in parallel.
+	// bestPredictorForTile reads from argb but never modifies it, so all
+	// tiles can be evaluated in parallel. Each worker owns one histogram
+	// scratch buffer, reused across its tiles.
 	numTiles := tileXSize * tileYSize
 	if numTiles >= 16 {
 		// Parallel predictor selection: partition tile rows across goroutines.
@@ -409,17 +450,11 @@ func ResidualImage(argb []uint32, width, height, bits, quality int, residualsBuf
 			}
 			go func(tyStart, tyEnd int) {
 				defer wg.Done()
+				histos := predHistosPool.Get().([]uint32)
+				defer predHistosPool.Put(histos)
 				for ty := tyStart; ty < tyEnd; ty++ {
 					for tx := 0; tx < tileXSize; tx++ {
-						bestMode := 0
-						bestCost := math.MaxFloat64
-						for mode := 0; mode < maxMode; mode++ {
-							cost := estimateEntropy(argb, width, height, tx, ty, bits, mode)
-							if cost < bestCost {
-								bestCost = cost
-								bestMode = mode
-							}
-						}
+						bestMode := bestPredictorForTile(argb, width, height, tx, ty, bits, maxMode, histos)
 						transformData[ty*tileXSize+tx] = uint32(bestMode)<<8 | ARGBBlack
 					}
 				}
@@ -427,20 +462,14 @@ func ResidualImage(argb []uint32, width, height, bits, quality int, residualsBuf
 		}
 		wg.Wait()
 	} else {
+		histos := predHistosPool.Get().([]uint32)
 		for ty := 0; ty < tileYSize; ty++ {
 			for tx := 0; tx < tileXSize; tx++ {
-				bestMode := 0
-				bestCost := math.MaxFloat64
-				for mode := 0; mode < maxMode; mode++ {
-					cost := estimateEntropy(argb, width, height, tx, ty, bits, mode)
-					if cost < bestCost {
-						bestCost = cost
-						bestMode = mode
-					}
-				}
+				bestMode := bestPredictorForTile(argb, width, height, tx, ty, bits, maxMode, histos)
 				transformData[ty*tileXSize+tx] = uint32(bestMode)<<8 | ARGBBlack
 			}
 		}
+		predHistosPool.Put(histos)
 	}
 
 	// Phase 2: Compute residuals using scratch row buffers so that
@@ -791,23 +820,65 @@ func applyColorTransformTile(argb []uint32, width, height, tx, ty, bits int, m M
 // Color indexing (palette) build
 // ---------------------------------------------------------------------------
 
+// predHistosPool reuses the per-worker histogram scratch of
+// bestPredictorForTile (numPredictors groups of 4x256 bins) across workers
+// and encodes; callers slice it down to the maxMode they evaluate.
+var predHistosPool = sync.Pool{
+	New: func() any { return make([]uint32, numPredictors*1024) },
+}
+
+// colorTableBits sizes the open-addressing hash tables used for palette
+// lookups: 1024 slots for at most MaxPaletteSize+1 = 257 distinct colors
+// keeps the load factor low enough for short probe sequences.
+const colorTableBits = 10
+
+// colorTableHash spreads an ARGB color over the table (same multiplier as
+// libwebp's palette hashing).
+func colorTableHash(c uint32) uint32 {
+	return (c * 0x1e35a7bd) >> (32 - colorTableBits)
+}
+
 // ColorIndexBuild scans all pixels to collect unique colors. If the number of
 // unique colors is at most MaxPaletteSize (256), it returns the sorted palette
 // and true. Otherwise it returns nil, 0, false.
 func ColorIndexBuild(argb []uint32, width, height int) (palette []uint32, paletteSize int, ok bool) {
-	colorSet := make(map[uint32]struct{}, MaxPaletteSize+1)
 	total := width * height
+	if total == 0 {
+		return nil, 0, false
+	}
 
+	// Open-addressing hash set on the stack: much faster than a map for the
+	// per-pixel insert, and allocation-free.
+	var keys [1 << colorTableBits]uint32
+	var used [1 << colorTableBits]bool
+	count := 0
+
+	last := ^argb[0] // differs from argb[0] so the first pixel is inserted
 	for i := 0; i < total; i++ {
-		colorSet[argb[i]] = struct{}{}
-		if len(colorSet) > MaxPaletteSize {
-			return nil, 0, false
+		c := argb[i]
+		if c == last {
+			continue // runs of identical pixels skip the probe entirely
+		}
+		last = c
+		h := colorTableHash(c)
+		for used[h] && keys[h] != c {
+			h = (h + 1) & (1<<colorTableBits - 1)
+		}
+		if !used[h] {
+			used[h] = true
+			keys[h] = c
+			count++
+			if count > MaxPaletteSize {
+				return nil, 0, false
+			}
 		}
 	}
 
-	palette = make([]uint32, 0, len(colorSet))
-	for c := range colorSet {
-		palette = append(palette, c)
+	palette = make([]uint32, 0, count)
+	for i, u := range used {
+		if u {
+			palette = append(palette, keys[i])
+		}
 	}
 	sort.Slice(palette, func(i, j int) bool {
 		return palette[i] < palette[j]
@@ -830,10 +901,26 @@ func ColorIndexBuild(argb []uint32, width, height int) (palette []uint32, palett
 //   - palette <= 16 colors: 4-bit indices, 2 pixels per uint32
 //   - otherwise:            8-bit indices, 1 pixel per uint32
 func ApplyPaletteTransform(argb []uint32, width, height int, palette []uint32) (packed []uint32, packedWidth int) {
-	// Build inverse lookup: color -> index.
-	invLookup := make(map[uint32]uint32, len(palette))
+	// Build inverse lookup (color -> index) as an open-addressing table on
+	// the stack: a map lookup per pixel is 5-10x slower.
+	var keys [1 << colorTableBits]uint32
+	var vals [1 << colorTableBits]uint32
+	var used [1 << colorTableBits]bool
 	for i, c := range palette {
-		invLookup[c] = uint32(i)
+		h := colorTableHash(c)
+		for used[h] {
+			h = (h + 1) & (1<<colorTableBits - 1)
+		}
+		used[h] = true
+		keys[h] = c
+		vals[h] = uint32(i)
+	}
+	lookup := func(c uint32) uint32 {
+		h := colorTableHash(c)
+		for used[h] && keys[h] != c {
+			h = (h + 1) & (1<<colorTableBits - 1)
+		}
+		return vals[h]
 	}
 
 	paletteSize := len(palette)
@@ -856,6 +943,17 @@ func ApplyPaletteTransform(argb []uint32, width, height int, palette []uint32) (
 
 	packed = make([]uint32, packedWidth*height)
 
+	// Memoize the last color: palette images are dominated by runs of
+	// identical pixels, which skip the hash probe entirely.
+	var lastColor, lastIdx uint32
+	if width*height > 0 {
+		lastColor = ^argb[0]
+	}
+
+	// pixelsPerWord is a power of two: use shift/mask instead of div/mod.
+	wordShift := uint(bits.TrailingZeros(uint(pixelsPerWord)))
+	posMask := pixelsPerWord - 1
+
 	for y := 0; y < height; y++ {
 		srcRow := y * width
 		dstRow := y * packedWidth
@@ -863,16 +961,23 @@ func ApplyPaletteTransform(argb []uint32, width, height int, palette []uint32) (
 		if pixelsPerWord == 1 {
 			// No packing: encode each index in the green channel.
 			for x := 0; x < width; x++ {
-				idx := invLookup[argb[srcRow+x]]
-				packed[dstRow+x] = ARGBBlack | (idx << 8)
+				c := argb[srcRow+x]
+				if c != lastColor {
+					lastColor, lastIdx = c, lookup(c)
+				}
+				packed[dstRow+x] = ARGBBlack | (lastIdx << 8)
 			}
 		} else {
 			// Pack multiple indices into each uint32.
 			bitMask := uint32((1 << bitsPerPixel) - 1)
 			for x := 0; x < width; x++ {
-				idx := invLookup[argb[srcRow+x]] & bitMask
-				wordPos := x / pixelsPerWord
-				bitPos := uint((x % pixelsPerWord) * bitsPerPixel)
+				c := argb[srcRow+x]
+				if c != lastColor {
+					lastColor, lastIdx = c, lookup(c)
+				}
+				idx := lastIdx & bitMask
+				wordPos := x >> wordShift
+				bitPos := uint((x & posMask) * bitsPerPixel)
 				if bitPos == 0 {
 					packed[dstRow+wordPos] = ARGBBlack
 				}

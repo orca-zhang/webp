@@ -330,13 +330,13 @@ func (dec *Decoder) doFilter(mbX, mbY int) {
 			hFilter8iAt(dec.cacheU, dec.cacheV, uvOff, uvBPS, limit, ilevel, hevT)
 		}
 		if mbY > 0 {
-			filterLoop26VAt(dec.cacheY, yOff, yBPS, 16, limit+4, ilevel, hevT)
-			filterLoop26VAt(dec.cacheU, uvOff, uvBPS, 8, limit+4, ilevel, hevT)
-			filterLoop26VAt(dec.cacheV, uvOff, uvBPS, 8, limit+4, ilevel, hevT)
+			// Vertical filters go through the dsp dispatch (NEON on arm64).
+			dsp.VFilter16(dec.cacheY, yOff, yBPS, limit+4, ilevel, hevT)
+			dsp.VFilter8(dec.cacheU, dec.cacheV, uvOff, uvOff, uvBPS, limit+4, ilevel, hevT)
 		}
 		if finfo.FInner {
-			vFilter16iAt(dec.cacheY, yOff, yBPS, limit, ilevel, hevT)
-			vFilter8iAt(dec.cacheU, dec.cacheV, uvOff, uvBPS, limit, ilevel, hevT)
+			dsp.VFilter16i(dec.cacheY, yOff, yBPS, limit, ilevel, hevT)
+			dsp.VFilter8i(dec.cacheU, dec.cacheV, uvOff, uvOff, uvBPS, limit, ilevel, hevT)
 		}
 	}
 }
@@ -382,23 +382,6 @@ func simpleHFilter16iAt(p []byte, base, bps, thresh int) {
 	}
 }
 
-// filterLoop26VAt applies FilterLoop26 (macroblock edge) vertical filter at base offset.
-// HEV -> doSimpleFilter2, !HEV -> doSimpleFilter6.
-func filterLoop26VAt(p []byte, base, bps, width, thresh, ithresh, hevThresh int) {
-	thresh2 := 2*thresh + 1
-	for i := 0; i < width; i++ {
-		off := base + i
-		if !needsFilter2At(p, off, bps, thresh2, ithresh) {
-			continue
-		}
-		if isHEV(p[off-2*bps], p[off-bps], p[off], p[off+bps], hevThresh) {
-			doSimpleFilter2(p, off, bps)
-		} else {
-			doSimpleFilter6(p, off, bps)
-		}
-	}
-}
-
 // filterLoop26HAt applies FilterLoop26 (macroblock edge) horizontal filter at base offset.
 func filterLoop26At(p []byte, base, bps, height, thresh, ithresh, hevThresh int) {
 	thresh2 := 2*thresh + 1
@@ -420,23 +403,6 @@ func filterLoop26HAt(p []byte, base, bps, height, thresh, ithresh, hevThresh int
 	filterLoop26At(p, base, bps, height, thresh, ithresh, hevThresh)
 }
 
-// filterLoop24VAt applies FilterLoop24 (inner edge) vertical filter at base offset.
-// HEV -> doSimpleFilter2, !HEV -> doSimpleFilter4.
-func filterLoop24VAt(p []byte, base, bps, width, thresh, ithresh, hevThresh int) {
-	thresh2 := 2*thresh + 1
-	for i := 0; i < width; i++ {
-		off := base + i
-		if !needsFilter2At(p, off, bps, thresh2, ithresh) {
-			continue
-		}
-		if isHEV(p[off-2*bps], p[off-bps], p[off], p[off+bps], hevThresh) {
-			doSimpleFilter2(p, off, bps)
-		} else {
-			doSimpleFilter4(p, off, bps)
-		}
-	}
-}
-
 // filterLoop24HAt applies FilterLoop24 (inner edge) horizontal filter at base offset.
 func filterLoop24HAt(p []byte, base, bps, height, thresh, ithresh, hevThresh int) {
 	thresh2 := 2*thresh + 1
@@ -453,24 +419,11 @@ func filterLoop24HAt(p []byte, base, bps, height, thresh, ithresh, hevThresh int
 	}
 }
 
-// vFilter16iAt applies inner vertical complex filters at base offset.
-func vFilter16iAt(p []byte, base, bps, thresh, ithresh, hevThresh int) {
-	for k := 1; k <= 3; k++ {
-		filterLoop24VAt(p, base+k*4*bps, bps, 16, thresh, ithresh, hevThresh)
-	}
-}
-
 // hFilter16iAt applies inner horizontal complex filters at base offset.
 func hFilter16iAt(p []byte, base, bps, thresh, ithresh, hevThresh int) {
 	for k := 1; k <= 3; k++ {
 		filterLoop24HAt(p, base+k*4, bps, 16, thresh, ithresh, hevThresh)
 	}
-}
-
-// vFilter8iAt applies inner vertical complex UV filters at base offset.
-func vFilter8iAt(u, v []byte, base, bps, thresh, ithresh, hevThresh int) {
-	filterLoop24VAt(u, base+4*bps, bps, 8, thresh, ithresh, hevThresh)
-	filterLoop24VAt(v, base+4*bps, bps, 8, thresh, ithresh, hevThresh)
 }
 
 // hFilter8iAt applies inner horizontal complex UV filters at base offset.

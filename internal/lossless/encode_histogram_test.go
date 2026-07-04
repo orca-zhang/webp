@@ -196,7 +196,7 @@ func TestHistogramCombineGreedy(t *testing.T) {
 	}
 
 	initialSize := hs.Size()
-	histogramCombineGreedy(hs)
+	histogramCombineGreedy(hs, nil)
 
 	if hs.Size() >= initialSize {
 		t.Errorf("greedy combining should reduce histogram count: before=%d, after=%d",
@@ -238,7 +238,7 @@ func TestHistogramCombineGreedyDifferent(t *testing.T) {
 		hs.histos[i].computeHistogramCost()
 	}
 
-	histogramCombineGreedy(hs)
+	histogramCombineGreedy(hs, nil)
 
 	// With very different distributions, some merges should be rejected.
 	// The exact result depends on entropy calculations.

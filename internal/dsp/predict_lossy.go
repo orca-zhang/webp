@@ -423,34 +423,8 @@ func hu4(dst []byte, off int) {
 	dst[off+3+3*BPS] = l3
 }
 
-// PredLuma4Direct calls the 4x4 prediction function for the given mode directly
-// via a switch statement, avoiding indirect function call overhead.
-func PredLuma4Direct(mode int, dst []byte, off int) {
-	switch mode {
-	case 0:
-		dc4(dst, off)
-	case 1:
-		tm4(dst, off)
-	case 2:
-		ve4(dst, off)
-	case 3:
-		he4(dst, off)
-	case 4:
-		rd4(dst, off)
-	case 5:
-		vr4(dst, off)
-	case 6:
-		ld4(dst, off)
-	case 7:
-		vl4(dst, off)
-	case 8:
-		hd4(dst, off)
-	case 9:
-		hu4(dst, off)
-	}
-}
-
-// PredLuma16Direct and PredChroma8Direct are defined in platform-specific files:
+// PredLuma4Direct, PredLuma16Direct and PredChroma8Direct are defined in
+// platform-specific files:
 // - predict_lossy_direct_arm64.go (NEON assembly for modes 0-3)
 // - predict_lossy_direct_amd64.go (pure Go)
 // - predict_lossy_direct_noasm.go (pure Go fallback)

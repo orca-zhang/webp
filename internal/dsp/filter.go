@@ -189,9 +189,11 @@ func filterLoop24(p []byte, base, hstride, vstride, size, thresh, ithresh, hevT 
 	}
 }
 
-// VFilter16 applies the complex vertical loop filter across a 16-wide edge.
+// vFilter16Go applies the complex vertical loop filter across a 16-wide edge.
 // p is the full buffer, base is the offset of the edge row.
-func VFilter16(p []byte, base, stride, thresh, ithresh, hevT int) {
+// The exported VFilter16 is defined in the platform dispatch files
+// (filter_direct_*.go).
+func vFilter16Go(p []byte, base, stride, thresh, ithresh, hevT int) {
 	filterLoop26(p, base, stride, 1, 16, thresh, ithresh, hevT)
 }
 
@@ -201,8 +203,8 @@ func HFilter16(p []byte, base, stride, thresh, ithresh, hevT int) {
 	filterLoop26(p, base, 1, stride, 16, thresh, ithresh, hevT)
 }
 
-// VFilter8 applies the complex vertical filter to an 8-wide chroma edge.
-func VFilter8(u, v []byte, uBase, vBase, stride, thresh, ithresh, hevT int) {
+// vFilter8Go applies the complex vertical filter to an 8-wide chroma edge.
+func vFilter8Go(u, v []byte, uBase, vBase, stride, thresh, ithresh, hevT int) {
 	filterLoop26(u, uBase, stride, 1, 8, thresh, ithresh, hevT)
 	filterLoop26(v, vBase, stride, 1, 8, thresh, ithresh, hevT)
 }
@@ -213,8 +215,8 @@ func HFilter8(u, v []byte, uBase, vBase, stride, thresh, ithresh, hevT int) {
 	filterLoop26(v, vBase, 1, stride, 8, thresh, ithresh, hevT)
 }
 
-// VFilter16i applies complex vertical filtering at internal block boundaries.
-func VFilter16i(p []byte, base, stride, thresh, ithresh, hevT int) {
+// vFilter16iGo applies complex vertical filtering at internal block boundaries.
+func vFilter16iGo(p []byte, base, stride, thresh, ithresh, hevT int) {
 	for k := 1; k <= 3; k++ {
 		filterLoop24(p, base+k*4*stride, stride, 1, 16, thresh, ithresh, hevT)
 	}
@@ -227,9 +229,9 @@ func HFilter16i(p []byte, base, stride, thresh, ithresh, hevT int) {
 	}
 }
 
-// VFilter8i applies complex vertical filtering at internal 4-row boundaries
+// vFilter8iGo applies complex vertical filtering at internal 4-row boundaries
 // for 8x8 chroma blocks.
-func VFilter8i(u, v []byte, uBase, vBase, stride, thresh, ithresh, hevT int) {
+func vFilter8iGo(u, v []byte, uBase, vBase, stride, thresh, ithresh, hevT int) {
 	filterLoop24(u, uBase+4*stride, stride, 1, 8, thresh, ithresh, hevT)
 	filterLoop24(v, vBase+4*stride, stride, 1, 8, thresh, ithresh, hevT)
 }
