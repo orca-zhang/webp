@@ -30,3 +30,28 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+  test-32bit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: ['386', 'arm']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        run: go build ./...
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+
+      # 386 binaries run natively on the amd64 runner; arm ones do not.
+      - name: Test
+        if: matrix.goarch == '386'
+        run: go test ./...
+        env:
+          GOARCH: ${{ matrix.goarch }}
