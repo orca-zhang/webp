@@ -567,6 +567,9 @@ type HistoScratch struct {
 	TileNext       []int        // tileTracker.next
 	Symbols        []uint16     // symbols output
 
+	// Reusable pair queue for histogramCombineGreedy (grows to n*n pairs).
+	PairQueue []histogramPair
+
 	// Reusable slabs for extractClusterCenters.
 	ClusterSlab    []Histogram
 	ClusterLitSlab []uint32
@@ -1035,13 +1038,18 @@ func histogramCombineEntropyBin(imageHisto *HistoSet, numBins int,
 }
 
 // histogramCombineGreedy repeatedly merges the pair with the largest savings.
-func histogramCombineGreedy(imageHisto *HistoSet) {
+// The pair queue (up to n*n entries) is reused across encodes via scratch.
+func histogramCombineGreedy(imageHisto *HistoSet, scratch *HistoScratch) {
 	histograms := imageHisto.histos
 	n := len(histograms)
 
 	var q histoQueue
 	q.maxSize = n * n
-	q.queue = make([]histogramPair, 0, n*n)
+	if scratch != nil && cap(scratch.PairQueue) >= n*n {
+		q.queue = scratch.PairQueue[:0]
+	} else {
+		q.queue = make([]histogramPair, 0, n*n)
+	}
 
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
@@ -1093,6 +1101,11 @@ func histogramCombineGreedy(imageHisto *HistoSet) {
 			}
 			q.push(histograms, idx1, i, 0)
 		}
+	}
+
+	// Hand the (possibly grown) queue buffer back for the next encode.
+	if scratch != nil {
+		scratch.PairQueue = q.queue[:0]
 	}
 }
 
@@ -1514,7 +1527,7 @@ func GetHistoImageSymbols(width, height int, refs *BackwardRefs, quality int,
 
 		doGreedy := histogramCombineStochastic(imageHisto, thresholdSize)
 		if doGreedy {
-			histogramCombineGreedy(imageHisto)
+			histogramCombineGreedy(imageHisto, scratch)
 		}
 	}
 

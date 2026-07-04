@@ -115,6 +115,13 @@ type metadata struct {
 // DecodeVP8L decodes a VP8L bitstream (the payload after the VP8L fourcc and
 // chunk size) and returns an NRGBA image.
 func DecodeVP8L(data []byte) (*image.NRGBA, error) {
+	return DecodeVP8LReuse(data, nil)
+}
+
+// DecodeVP8LReuse decodes like DecodeVP8L but reuses the pixel buffer of
+// reuse (typically a previous decode result) when its capacity is
+// sufficient for the new image. reuse may be nil.
+func DecodeVP8LReuse(data []byte, reuse *image.NRGBA) (*image.NRGBA, error) {
 	dec := acquireDecoder()
 	defer releaseDecoder(dec)
 
@@ -186,7 +193,7 @@ func DecodeVP8L(data []byte) (*image.NRGBA, error) {
 	// and will expand packed pixels back to the full image dimensions.
 	out := dec.applyInverseTransforms(dec.pixels[:numPixOrig])
 
-	return argbToNRGBA(out, dec.Width, dec.Height), nil
+	return argbToNRGBA(out, dec.Width, dec.Height, reuse), nil
 }
 
 // decodeHeader reads the VP8L header: signature, width, height, alpha, version.
@@ -337,10 +344,21 @@ const numArgbCacheRows = 16
 // VP8L internal pixel order is ARGB (alpha in bits 31..24, red 23..16,
 // green 15..8, blue 7..0).
 // For large images, the conversion is parallelized across rows.
-func argbToNRGBA(pixels []uint32, width, height int) *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+// If reuse is non-nil and its Pix buffer is large enough, the returned
+// image reuses that storage instead of allocating.
+func argbToNRGBA(pixels []uint32, width, height int, reuse *image.NRGBA) *image.NRGBA {
+	stride := width * 4
+	var img *image.NRGBA
+	if reuse != nil && cap(reuse.Pix) >= height*stride {
+		img = &image.NRGBA{
+			Pix:    reuse.Pix[:height*stride],
+			Stride: stride,
+			Rect:   image.Rect(0, 0, width, height),
+		}
+	} else {
+		img = image.NewNRGBA(image.Rect(0, 0, width, height))
+	}
 	pix := img.Pix
-	stride := img.Stride
 
 	numWorkers := runtime.GOMAXPROCS(0)
 	if numWorkers > 1 && width*height >= minPixelsForParallel {
@@ -427,6 +445,6 @@ func NRGBAToARGB(img *image.NRGBA) []uint32 {
 
 // ARGBToNRGBA is an alias for the internal conversion used by tests.
 func ARGBToNRGBA(pixels []uint32, width, height int) *image.NRGBA {
-	return argbToNRGBA(pixels, width, height)
+	return argbToNRGBA(pixels, width, height, nil)
 }
 

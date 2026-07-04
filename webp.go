@@ -86,6 +86,25 @@ func readAll(r io.Reader) ([]byte, error) {
 // For lossless images the returned type is *image.NRGBA.
 // For lossy images the returned type is *image.YCbCr (when available) or *image.NRGBA.
 func Decode(r io.Reader) (image.Image, error) {
+	return DecodeReuse(r, nil)
+}
+
+// DecodeReuse decodes a WebP image like [Decode], but reuses the pixel
+// buffers of reuse — typically the image returned by a previous Decode or
+// DecodeReuse call — when its type and capacity match the new image.
+// Pass nil for the first call. When the buffers are incompatible (different
+// image type, or too small), a fresh image is allocated, so it is always
+// safe to feed the previous result back in a loop:
+//
+//	var img image.Image
+//	for _, f := range files {
+//	    img, err = webp.DecodeReuse(f, img)
+//	    ...
+//	}
+//
+// The returned image may share storage with reuse; the caller must not use
+// reuse after the call.
+func DecodeReuse(r io.Reader, reuse image.Image) (image.Image, error) {
 	if r == nil {
 		return nil, errors.New("webp: nil reader")
 	}
@@ -93,7 +112,7 @@ func Decode(r io.Reader) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webp: reading data: %w", err)
 	}
-	return decodeBytes(data)
+	return decodeBytes(data, reuse)
 }
 
 // DecodeConfig returns the color model and dimensions of a WebP image
@@ -175,8 +194,9 @@ func GetFeatures(r io.Reader) (*Features, error) {
 	return f, nil
 }
 
-// decodeBytes decodes a complete WebP file from a byte slice.
-func decodeBytes(data []byte) (image.Image, error) {
+// decodeBytes decodes a complete WebP file from a byte slice, reusing the
+// buffers of reuse when compatible (may be nil).
+func decodeBytes(data []byte, reuse image.Image) (image.Image, error) {
 	p, err := container.NewParser(data)
 	if err != nil {
 		return nil, fmt.Errorf("webp: parsing container: %w", err)
@@ -189,20 +209,21 @@ func decodeBytes(data []byte) (image.Image, error) {
 
 	// Decode the first frame only; use animation.Decode() for multi-frame.
 	frame := frames[0]
-	return decodeFrame(frame)
+	return decodeFrame(frame, reuse)
 }
 
 // decodeFrame decodes a single image frame.
-func decodeFrame(frame container.FrameInfo) (image.Image, error) {
+func decodeFrame(frame container.FrameInfo, reuse image.Image) (image.Image, error) {
 	if frame.IsLossless {
-		return decodeLossless(frame.Payload)
+		return decodeLossless(frame.Payload, reuse)
 	}
-	return decodeLossy(frame.Payload, frame.AlphaData)
+	return decodeLossy(frame.Payload, frame.AlphaData, reuse)
 }
 
 // decodeLossless decodes a VP8L lossless bitstream.
-func decodeLossless(data []byte) (image.Image, error) {
-	img, err := lossless.DecodeVP8L(data)
+func decodeLossless(data []byte, reuse image.Image) (image.Image, error) {
+	prev, _ := reuse.(*image.NRGBA)
+	img, err := lossless.DecodeVP8LReuse(data, prev)
 	if err != nil {
 		return nil, fmt.Errorf("webp: lossless decode: %w", err)
 	}
@@ -248,9 +269,9 @@ func decodeFrameForAnimation(bitstreamData, alphaData []byte) (*image.NRGBA, err
 	var img image.Image
 	var err error
 	if isLossless {
-		img, err = decodeLossless(bitstreamData)
+		img, err = decodeLossless(bitstreamData, nil)
 	} else {
-		img, err = decodeLossy(bitstreamData, alphaData)
+		img, err = decodeLossy(bitstreamData, alphaData, nil)
 	}
 	if err != nil {
 		return nil, err
@@ -320,7 +341,7 @@ func ycbcrToNRGBA(ycbcr *image.YCbCr) *image.NRGBA {
 // Without alpha data it returns *image.YCbCr (4:2:0) — no colour-space
 // conversion needed, just a plane copy.  With alpha it falls back to
 // *image.NRGBA using fancy chroma upsampling.
-func decodeLossy(data []byte, alphaData []byte) (image.Image, error) {
+func decodeLossy(data []byte, alphaData []byte, reuse image.Image) (image.Image, error) {
 	dec, width, height, yPlane, yStride, uPlane, vPlane, uvStride, err := lossy.DecodeFrame(data)
 	if err != nil {
 		return nil, fmt.Errorf("webp: lossy decode: %w", err)
@@ -338,17 +359,20 @@ func decodeLossy(data []byte, alphaData []byte) (image.Image, error) {
 
 	// Fast path: no alpha → return *image.YCbCr directly.
 	if alphaPlane == nil {
-		return buildYCbCr(width, height, yPlane, yStride, uPlane, vPlane, uvStride), nil
+		prev, _ := reuse.(*image.YCbCr)
+		return buildYCbCr(width, height, yPlane, yStride, uPlane, vPlane, uvStride, prev), nil
 	}
 
 	// Slow path: alpha present → NRGBA with fancy chroma upsampling.
-	return buildNRGBA(width, height, yPlane, yStride, uPlane, vPlane, uvStride, alphaPlane), nil
+	prev, _ := reuse.(*image.NRGBA)
+	return buildNRGBA(width, height, yPlane, yStride, uPlane, vPlane, uvStride, alphaPlane, prev), nil
 }
 
 // buildYCbCr copies the decoder's Y/U/V cache planes into an image.YCbCr.
 // The decoder's slab is returned to the pool after this function, so the
-// data must be copied out.
-func buildYCbCr(width, height int, yPlane []byte, yStride int, uPlane, vPlane []byte, uvStride int) *image.YCbCr {
+// data must be copied out. If reuse comes from a previous buildYCbCr call
+// and its contiguous backing buffer is large enough, it is reused.
+func buildYCbCr(width, height int, yPlane []byte, yStride int, uPlane, vPlane []byte, uvStride int, reuse *image.YCbCr) *image.YCbCr {
 	chromaH := (height + 1) / 2
 
 	yLen := height * yStride
@@ -357,7 +381,14 @@ func buildYCbCr(width, height int, yPlane []byte, yStride int, uPlane, vPlane []
 	if totalSize > 1<<30 {
 		return nil
 	}
-	buf := make([]byte, yLen+2*cLen)
+	var buf []byte
+	if reuse != nil && cap(reuse.Y) >= yLen+2*cLen {
+		// Images built here use one contiguous allocation with Y at its
+		// start, so cap(Y) sees the full buffer.
+		buf = reuse.Y[:yLen+2*cLen]
+	} else {
+		buf = make([]byte, yLen+2*cLen)
+	}
 
 	copy(buf[:yLen], yPlane[:yLen])
 	copy(buf[yLen:yLen+cLen], uPlane[:cLen])
@@ -376,8 +407,19 @@ func buildYCbCr(width, height int, yPlane []byte, yStride int, uPlane, vPlane []
 
 // buildNRGBA constructs an *image.NRGBA from raw YUV planes + alpha using
 // the diamond-shaped 4-tap fancy upsampler (FANCY_UPSAMPLING from libwebp).
-func buildNRGBA(width, height int, yPlane []byte, yStride int, uPlane, vPlane []byte, uvStride int, alphaPlane []byte) *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+// If reuse is non-nil and its Pix buffer is large enough, it is reused.
+func buildNRGBA(width, height int, yPlane []byte, yStride int, uPlane, vPlane []byte, uvStride int, alphaPlane []byte, reuse *image.NRGBA) *image.NRGBA {
+	stride := width * 4
+	var img *image.NRGBA
+	if reuse != nil && cap(reuse.Pix) >= height*stride {
+		img = &image.NRGBA{
+			Pix:    reuse.Pix[:height*stride],
+			Stride: stride,
+			Rect:   image.Rect(0, 0, width, height),
+		}
+	} else {
+		img = image.NewNRGBA(image.Rect(0, 0, width, height))
+	}
 
 	yRow := func(row int) []byte {
 		off := row * yStride

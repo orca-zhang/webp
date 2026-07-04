@@ -451,17 +451,42 @@ func alphaFilterGradient(in []byte, width, height int, out []byte) {
 	}
 }
 
-// encodeAlphaInternal encodes alpha data with a specific filter, returning
-// the complete ALPH chunk payload (header + data).
-func encodeAlphaInternal(data []byte, width, height, method, filter int,
-	reduceLevels bool, effortLevel int) ([]byte, int, error) {
+// alphaScratch holds buffers reused across the filter trials of a single
+// alpha encode: each trial needs a filtered plane and (for lossless) an
+// ARGB expansion, all discarded except through the copied result.
+type alphaScratch struct {
+	filtered []byte
+	argb     []uint32
+}
 
+func (s *alphaScratch) getFiltered(n int) []byte {
+	if cap(s.filtered) < n {
+		s.filtered = make([]byte, n)
+	}
+	return s.filtered[:n]
+}
+
+func (s *alphaScratch) getARGB(n int) []uint32 {
+	if cap(s.argb) < n {
+		s.argb = make([]uint32, n)
+	}
+	return s.argb[:n]
+}
+
+// encodeAlphaInternal encodes alpha data with a specific filter, returning
+// the complete ALPH chunk payload (header + data). scratch may be nil.
+func encodeAlphaInternal(data []byte, width, height, method, filter int,
+	reduceLevels bool, effortLevel int, scratch *alphaScratch) ([]byte, int, error) {
+
+	if scratch == nil {
+		scratch = &alphaScratch{}
+	}
 	dataSize := width * height
 
 	// Apply filter.
 	var alphaSrc []byte
 	if filter != AlphaFilterNone {
-		filtered := make([]byte, dataSize)
+		filtered := scratch.getFiltered(dataSize)
 		switch filter {
 		case AlphaFilterHorizontal:
 			alphaFilterHorizontal(data, width, height, filtered)
@@ -480,7 +505,7 @@ func encodeAlphaInternal(data []byte, width, height, method, filter int,
 	if method == AlphaLosslessCompression {
 		// Encode alpha values via VP8L lossless encoder.
 		// Alpha values are placed in the green channel of an ARGB image.
-		argb := make([]uint32, dataSize)
+		argb := scratch.getARGB(dataSize)
 		for i, a := range alphaSrc {
 			argb[i] = 0xff000000 | (uint32(a) << 8)
 		}
@@ -557,11 +582,12 @@ func applyFiltersAndEncode(alpha []byte, width, height, method, filter int,
 		score int
 	}
 	best := trial{score: math.MaxInt32}
+	var scratch alphaScratch // shared across trials
 
 	for f := AlphaFilterNone; f < alphaFilterLast && tryMap != 0; f++ {
 		if tryMap&1 != 0 {
 			result, score, err := encodeAlphaInternal(alpha, width, height,
-				method, f, reduceLevels, effortLevel)
+				method, f, reduceLevels, effortLevel, &scratch)
 			if err != nil {
 				return nil, err
 			}
@@ -576,7 +602,7 @@ func applyFiltersAndEncode(alpha []byte, width, height, method, filter int,
 	if best.data == nil {
 		// Fallback: no filter.
 		result, _, err := encodeAlphaInternal(alpha, width, height,
-			method, AlphaFilterNone, reduceLevels, effortLevel)
+			method, AlphaFilterNone, reduceLevels, effortLevel, &scratch)
 		if err != nil {
 			return nil, err
 		}

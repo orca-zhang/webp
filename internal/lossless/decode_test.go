@@ -76,7 +76,7 @@ func TestArgbToNRGBA(t *testing.T) {
 		0xff0000ff, // opaque blue
 		0x80402010, // semi-transparent
 	}
-	img := argbToNRGBA(pixels, 2, 2)
+	img := argbToNRGBA(pixels, 2, 2, nil)
 
 	tests := []struct {
 		x, y    int
@@ -98,7 +98,7 @@ func TestArgbToNRGBA(t *testing.T) {
 
 func TestNRGBAToARGB_Roundtrip(t *testing.T) {
 	pixels := []uint32{0xff112233, 0x80aabbcc}
-	img := argbToNRGBA(pixels, 2, 1)
+	img := argbToNRGBA(pixels, 2, 1, nil)
 	got := NRGBAToARGB(img)
 	for i, want := range pixels {
 		if got[i] != want {

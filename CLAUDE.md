@@ -50,7 +50,6 @@ internal/
   dsp/                     # Digital Signal Processing (YUV, filters, prediction, cost)
   lossless/                # VP8L encoder/decoder
   lossy/                   # VP8 encoder/decoder
-  pool/                    # Object pool utilities
 testdata/                  # Test WebP files
 libwebp/                   # Bundled reference C implementation (for reference only)
 ```

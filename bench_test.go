@@ -62,6 +62,48 @@ func BenchmarkEncodeLossless(b *testing.B) {
 	b.SetBytes(int64(buf.Len()))
 }
 
+// BenchmarkDecodeLossyReuse measures decode with output-buffer reuse via
+// DecodeReuse (steady-state allocations should be near zero for the image).
+func BenchmarkDecodeLossyReuse(b *testing.B) {
+	img := loadTestImage(b)
+	buf := &bytes.Buffer{}
+	if err := Encode(buf, img, &EncoderOptions{Quality: 75, Method: 4}); err != nil {
+		b.Fatal(err)
+	}
+	data := buf.Bytes()
+	var out image.Image
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = DecodeReuse(bytes.NewReader(data), out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(int64(len(data)))
+}
+
+// BenchmarkDecodeLosslessReuse is the lossless counterpart of
+// BenchmarkDecodeLossyReuse.
+func BenchmarkDecodeLosslessReuse(b *testing.B) {
+	img := loadTestImage(b)
+	buf := &bytes.Buffer{}
+	if err := Encode(buf, img, &EncoderOptions{Lossless: true, Quality: 75}); err != nil {
+		b.Fatal(err)
+	}
+	data := buf.Bytes()
+	var out image.Image
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = DecodeReuse(bytes.NewReader(data), out)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.SetBytes(int64(len(data)))
+}
+
 // loadPaletteImage builds an image with 16 distinct colors in large flat
 // regions, representative of icons/graphics that take the palette path.
 func loadPaletteImage(b *testing.B) image.Image {

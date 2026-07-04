@@ -450,7 +450,8 @@ func ResidualImage(argb []uint32, width, height, bits, quality int, residualsBuf
 			}
 			go func(tyStart, tyEnd int) {
 				defer wg.Done()
-				histos := make([]uint32, maxMode*1024)
+				histos := predHistosPool.Get().([]uint32)
+				defer predHistosPool.Put(histos)
 				for ty := tyStart; ty < tyEnd; ty++ {
 					for tx := 0; tx < tileXSize; tx++ {
 						bestMode := bestPredictorForTile(argb, width, height, tx, ty, bits, maxMode, histos)
@@ -461,13 +462,14 @@ func ResidualImage(argb []uint32, width, height, bits, quality int, residualsBuf
 		}
 		wg.Wait()
 	} else {
-		histos := make([]uint32, maxMode*1024)
+		histos := predHistosPool.Get().([]uint32)
 		for ty := 0; ty < tileYSize; ty++ {
 			for tx := 0; tx < tileXSize; tx++ {
 				bestMode := bestPredictorForTile(argb, width, height, tx, ty, bits, maxMode, histos)
 				transformData[ty*tileXSize+tx] = uint32(bestMode)<<8 | ARGBBlack
 			}
 		}
+		predHistosPool.Put(histos)
 	}
 
 	// Phase 2: Compute residuals using scratch row buffers so that
@@ -817,6 +819,13 @@ func applyColorTransformTile(argb []uint32, width, height, tx, ty, bits int, m M
 // ---------------------------------------------------------------------------
 // Color indexing (palette) build
 // ---------------------------------------------------------------------------
+
+// predHistosPool reuses the per-worker histogram scratch of
+// bestPredictorForTile (numPredictors groups of 4x256 bins) across workers
+// and encodes; callers slice it down to the maxMode they evaluate.
+var predHistosPool = sync.Pool{
+	New: func() any { return make([]uint32, numPredictors*1024) },
+}
 
 // colorTableBits sizes the open-addressing hash tables used for palette
 // lookups: 1024 slots for at most MaxPaletteSize+1 = 257 distinct colors
