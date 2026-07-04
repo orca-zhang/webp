@@ -6,7 +6,11 @@ package lossless
 // Reference: libwebp/src/dec/vp8l_dec.c (ReadHuffmanCode, ReadHuffmanCodes,
 // ReadHuffmanCodesHelper, DecodeImageData).
 
-import "github.com/deepteams/webp/internal/bitio"
+import (
+	"encoding/binary"
+
+	"github.com/deepteams/webp/internal/bitio"
+)
 
 // readHuffmanCodeLengths decodes Huffman-coded code lengths using a previously
 // built code-lengths Huffman table.
@@ -400,39 +404,8 @@ func getCopyDistance(distanceSymbol int, br *bitio.LosslessReader) int {
 	return offset + int(br.ReadBits(extraBits)) + 1
 }
 
-// getCopyLength decodes the length from a length symbol.
-func getCopyLength(lengthSymbol int, br *bitio.LosslessReader) int {
-	return getCopyDistance(lengthSymbol, br) // same encoding
-}
 
-// readSymbolFromTree decodes one Huffman symbol from a table using the
-// bit reader, performing the necessary fill/prefetch.
-// Uses concrete *bitio.LosslessReader so FillBitWindow/PrefetchBits/
-// SetBitPos/BitPos can inline (avoiding interface dispatch overhead).
-func readSymbolFromTree(table []HuffmanCode, br *bitio.LosslessReader) (int, bool) {
-	br.FillBitWindow()
-	val, bitsUsed := ReadSymbol(table, br.PrefetchBits())
-	if bitsUsed < 0 {
-		return 0, false
-	}
-	br.SetBitPos(br.BitPos() + bitsUsed)
-	return int(val), true
-}
 
-// readPackedSymbols attempts to decode an entire ARGB pixel from the
-// packed table. Returns (value, code) where code == 0 means a full
-// literal was decoded into *dst, otherwise code is the non-literal symbol.
-// Uses concrete *bitio.LosslessReader for method inlining.
-func readPackedSymbols(group *HTreeGroup, br *bitio.LosslessReader) (argb uint32, greenCode int, isLiteral bool) {
-	bits := br.PrefetchBits() & (HuffmanPackedTableSize - 1)
-	code := group.PackedTable[bits]
-	if code.Bits < bitsSpecialMarker {
-		br.SetBitPos(br.BitPos() + code.Bits)
-		return code.Value, 0, true
-	}
-	br.SetBitPos(br.BitPos() + code.Bits - bitsSpecialMarker)
-	return 0, int(code.Value), false
-}
 
 // decodeImageData is the main entropy-coding decode loop. It decodes
 // width*height pixels into data[], using the Huffman trees in dec.hdr.
@@ -456,6 +429,17 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 	colorCacheLimit := lenCodeLimit + hdr.colorCacheSize
 	colorCache := hdr.colorCache
 	mask := hdr.huffmanMask
+
+	// Register-resident bit-reader state (same technique as getCoeffsInline
+	// in the lossy decoder): val/bitPos/rpos live in locals so that stores
+	// to data[] don't force reloads through the br pointer on every symbol.
+	// The 4-byte refill fast path is inlined; the slow tail path syncs via
+	// SetState, delegates to FillBitWindow, and reloads. EOS tests replicate
+	// IsEndOfStream on the local state.
+	buf := br.Data()
+	bufLen := len(buf)
+	val, bitPos, rpos := br.State()
+	eos := br.Eos()
 
 	pos := 0
 	lastCached := 0 // 8.2: exact position tracking like C's last_cached pointer
@@ -500,20 +484,40 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 			continue
 		}
 
-		br.FillBitWindow()
+		// FillBitWindow, inlined fast path.
+		if bitPos >= 32 {
+			if rpos+4 <= bufLen {
+				val = val>>32 | uint64(binary.LittleEndian.Uint32(buf[rpos:]))<<32
+				rpos += 4
+				bitPos -= 32
+			} else {
+				br.SetState(val, bitPos, rpos)
+				br.FillBitWindow()
+				val, bitPos, rpos = br.State()
+				eos = br.Eos()
+			}
+		}
 
 		var code int
 		if htreeGroup.UsePackedTable {
-			// 8.6: Packed table path. C's ReadPackedSymbols writes directly
-			// to *src and returns PACKED_NON_LITERAL_CODE (0) for literals.
-			// When literal, write to data[pos] and do AdvanceByOne (no
-			// immediate per-pixel cache insertion).
-			argb, gc, isLit := readPackedSymbols(htreeGroup, br)
-			if br.IsEndOfStream() {
+			// 8.6: Packed table path (inlined readPackedSymbols). C's
+			// ReadPackedSymbols writes directly to *src and returns
+			// PACKED_NON_LITERAL_CODE (0) for literals. When literal, write
+			// to data[pos] and do AdvanceByOne (no immediate per-pixel
+			// cache insertion).
+			pbits := uint32(val>>(uint(bitPos)&63)) & (HuffmanPackedTableSize - 1)
+			pcode := htreeGroup.PackedTable[pbits]
+			isLit := pcode.Bits < bitsSpecialMarker
+			if isLit {
+				bitPos += pcode.Bits
+			} else {
+				bitPos += pcode.Bits - bitsSpecialMarker
+			}
+			if eos || (rpos == bufLen && bitPos > 64) {
 				break
 			}
 			if isLit {
-				data[pos] = argb
+				data[pos] = pcode.Value
 				pos++
 				col++
 				if col >= width {
@@ -528,21 +532,21 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 				}
 				continue
 			}
-			code = gc
+			code = int(pcode.Value)
 		} else {
 			// Inline readSymbolFromTree for green.
-			// FillBitWindow already called above — no redundant fill needed.
-			prefetch := br.PrefetchBits()
-			val, bits := ReadSymbol(htreeGroup.HTrees[int(HuffGreen)], prefetch)
+			// FillBitWindow already done above — no redundant fill needed.
+			prefetch := uint32(val >> (uint(bitPos) & 63))
+			v, bits := ReadSymbol(htreeGroup.HTrees[int(HuffGreen)], prefetch)
 			if bits < 0 {
 				return ErrBitstream
 			}
-			br.SetBitPos(br.BitPos() + bits)
-			code = int(val)
+			bitPos += bits
+			code = int(v)
 		}
 
 		// 8.7: EOS check after GREEN symbol (C has this at line 1259).
-		if br.IsEndOfStream() {
+		if eos || (rpos == bufLen && bitPos > 64) {
 			break
 		}
 
@@ -553,35 +557,46 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 			} else {
 				// Inline readSymbolFromTree for red.
 				// After green (≤15 bits), ≥17 bits remain — no fill needed.
-				prefetch := br.PrefetchBits()
+				prefetch := uint32(val >> (uint(bitPos) & 63))
 				redVal, redBits := ReadSymbol(htreeGroup.HTrees[int(HuffRed)], prefetch)
 				if redBits < 0 {
 					return ErrBitstream
 				}
-				br.SetBitPos(br.BitPos() + redBits)
+				bitPos += redBits
 
 				// Fill before blue+alpha (green+red consumed ≤30 bits).
-				br.FillBitWindow()
+				if bitPos >= 32 {
+					if rpos+4 <= bufLen {
+						val = val>>32 | uint64(binary.LittleEndian.Uint32(buf[rpos:]))<<32
+						rpos += 4
+						bitPos -= 32
+					} else {
+						br.SetState(val, bitPos, rpos)
+						br.FillBitWindow()
+						val, bitPos, rpos = br.State()
+						eos = br.Eos()
+					}
+				}
 
 				// Inline readSymbolFromTree for blue.
-				prefetch = br.PrefetchBits()
+				prefetch = uint32(val >> (uint(bitPos) & 63))
 				blueVal, blueBits := ReadSymbol(htreeGroup.HTrees[int(HuffBlue)], prefetch)
 				if blueBits < 0 {
 					return ErrBitstream
 				}
-				br.SetBitPos(br.BitPos() + blueBits)
+				bitPos += blueBits
 
 				// Inline readSymbolFromTree for alpha.
 				// After blue (≤15 bits), ≥17 bits remain — no fill needed.
-				prefetch = br.PrefetchBits()
+				prefetch = uint32(val >> (uint(bitPos) & 63))
 				alphaVal, alphaBits := ReadSymbol(htreeGroup.HTrees[int(HuffAlpha)], prefetch)
 				if alphaBits < 0 {
 					return ErrBitstream
 				}
-				br.SetBitPos(br.BitPos() + alphaBits)
+				bitPos += alphaBits
 
 				// 8.7: Second EOS check after all symbols (C line 1269).
-				if br.IsEndOfStream() {
+				if eos || (rpos == bufLen && bitPos > 64) {
 					break
 				}
 				data[pos] = (uint32(alphaVal) << 24) | (uint32(redVal) << 16) | (uint32(code) << 8) | uint32(blueVal)
@@ -610,19 +625,41 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 			} else {
 				extraBits := (lengthSym - 2) >> 1
 				offset := (2 + (lengthSym & 1)) << extraBits
-				br.FillBitWindow()
-				length = offset + int(br.PrefetchBits()&uint32((1<<extraBits)-1)) + 1
-				br.SetBitPos(br.BitPos() + extraBits)
+				if bitPos >= 32 {
+					if rpos+4 <= bufLen {
+						val = val>>32 | uint64(binary.LittleEndian.Uint32(buf[rpos:]))<<32
+						rpos += 4
+						bitPos -= 32
+					} else {
+						br.SetState(val, bitPos, rpos)
+						br.FillBitWindow()
+						val, bitPos, rpos = br.State()
+						eos = br.Eos()
+					}
+				}
+				length = offset + int(uint32(val>>(uint(bitPos)&63))&uint32((1<<extraBits)-1)) + 1
+				bitPos += extraBits
 			}
 
 			// Inline readSymbolFromTree for distance.
-			br.FillBitWindow()
-			prefetch := br.PrefetchBits()
+			if bitPos >= 32 {
+				if rpos+4 <= bufLen {
+					val = val>>32 | uint64(binary.LittleEndian.Uint32(buf[rpos:]))<<32
+					rpos += 4
+					bitPos -= 32
+				} else {
+					br.SetState(val, bitPos, rpos)
+					br.FillBitWindow()
+					val, bitPos, rpos = br.State()
+					eos = br.Eos()
+				}
+			}
+			prefetch := uint32(val >> (uint(bitPos) & 63))
 			distVal, distBits := ReadSymbol(htreeGroup.HTrees[int(HuffDist)], prefetch)
 			if distBits < 0 {
 				return ErrBitstream
 			}
-			br.SetBitPos(br.BitPos() + distBits)
+			bitPos += distBits
 			distSymbol := int(distVal)
 
 			// Inline getCopyDistance.
@@ -632,13 +669,24 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 			} else {
 				dExtraBits := (distSymbol - 2) >> 1
 				dOffset := (2 + (distSymbol & 1)) << dExtraBits
-				br.FillBitWindow()
-				distCode = dOffset + int(br.PrefetchBits()&uint32((1<<dExtraBits)-1)) + 1
-				br.SetBitPos(br.BitPos() + dExtraBits)
+				if bitPos >= 32 {
+					if rpos+4 <= bufLen {
+						val = val>>32 | uint64(binary.LittleEndian.Uint32(buf[rpos:]))<<32
+						rpos += 4
+						bitPos -= 32
+					} else {
+						br.SetState(val, bitPos, rpos)
+						br.FillBitWindow()
+						val, bitPos, rpos = br.State()
+						eos = br.Eos()
+					}
+				}
+				distCode = dOffset + int(uint32(val>>(uint(bitPos)&63))&uint32((1<<dExtraBits)-1)) + 1
+				bitPos += dExtraBits
 			}
 			dist := PlaneCodeToDistance(width, distCode)
 
-			if br.IsEndOfStream() {
+			if eos || (rpos == bufLen && bitPos > 64) {
 				break
 			}
 			// 8.4: Bounds check. pos is equivalent to C's (src - data).
@@ -701,6 +749,9 @@ func (dec *Decoder) decodeImageData(data []uint32, width, height, lastRow int) e
 			return ErrBitstream
 		}
 	}
+
+	// Write the register-resident reader state back before leaving.
+	br.SetState(val, bitPos, rpos)
 
 	if br.IsEndOfStream() && pos < srcEnd {
 		return ErrBitstream
