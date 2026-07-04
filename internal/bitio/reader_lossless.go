@@ -128,6 +128,32 @@ func (br *LosslessReader) IsEndOfStream() bool {
 	return br.eos || (br.pos == br.len_ && br.bitPos > vp8lLBits)
 }
 
+// State returns the reader's hot state (prefetched bits, bit position, byte
+// position) so that tight decode loops can keep it in local variables and
+// avoid reloading it through the pointer on every access. Callers must write
+// the state back with SetState before invoking any other reader method.
+func (br *LosslessReader) State() (val uint64, bitPos, pos int) {
+	return br.val, br.bitPos, br.pos
+}
+
+// SetState writes back state previously obtained from State (and possibly
+// advanced locally by the caller).
+func (br *LosslessReader) SetState(val uint64, bitPos, pos int) {
+	br.val, br.bitPos, br.pos = val, bitPos, pos
+}
+
+// Data returns the underlying input buffer. Together with State/SetState it
+// lets hot loops inline the 4-byte fast refill locally; the slow tail path
+// must go through SetState + FillBitWindow.
+func (br *LosslessReader) Data() []byte {
+	return br.buf
+}
+
+// Eos reports the sticky end-of-stream flag (set by the slow refill path).
+func (br *LosslessReader) Eos() bool {
+	return br.eos
+}
+
 // kBitMask maps nBits (0..24) to the corresponding mask (2^n - 1).
 var kBitMask = [vp8lMaxNumBitRead + 1]uint32{
 	0x000000, // 0

@@ -224,27 +224,27 @@ Benchmarked on Apple M5 Max (arm64), 1536x1024 RGB image, Go 1.24.2. Median of 1
 
 | Library | Mode | Time | MB/s | B/op | Allocs |
 |---------|------|-----:|-----:|------:|-------:|
-| **deepteams/webp** (Pure Go) | Lossy | **47.2 ms** | 4.1 | 1.2 MB | 174 |
-| gen2brain/webp (WASM) | Lossy | 54.9 ms | 4.6 | 13 KB | 12 |
-| chai2010/webp (CGo) | Lossy | 73.2 ms | 2.9 | 222 KB | 4 |
-| **deepteams/webp** (Pure Go) | Lossless | **114 ms** | 16.1 | 20.1 MB | 1,177 |
-| gen2brain/webp (WASM) | Lossless | 180 ms | 11.4 | 335 KB | 12 |
-| nativewebp (Pure Go) | Lossless | 272 ms | 7.4 | 85 MB | 2,155 |
-| chai2010/webp (CGo) | Lossless | 899 ms | 1.9 | 2.5 MB | 4 |
+| **deepteams/webp** (Pure Go) | Lossy | **47.8 ms** | 4.0 | 1.2 MB | 166 |
+| gen2brain/webp (WASM) | Lossy | 56.9 ms | 4.4 | 13 KB | 12 |
+| chai2010/webp (CGo) | Lossy | 76.4 ms | 2.7 | 222 KB | 4 |
+| **deepteams/webp** (Pure Go) | Lossless | **116 ms** | 15.8 | 20.1 MB | 1,177 |
+| gen2brain/webp (WASM) | Lossless | 187 ms | 11.0 | 335 KB | 12 |
+| nativewebp (Pure Go) | Lossless | 280 ms | 7.2 | 85 MB | 2,155 |
+| chai2010/webp (CGo) | Lossless | 929 ms | 1.9 | 2.5 MB | 4 |
 
 ### Decode (1536x1024)
 
 | Library | Mode | Time | MB/s | B/op | Allocs |
 |---------|------|-----:|-----:|------:|-------:|
-| **deepteams/webp** (Pure Go) | Lossy | **9.0 ms** | 21.4 | 2.5 MB | 7 |
-| chai2010/webp (CGo) | Lossy | 9.4 ms | 22.4 | 6.4 MB | 23 |
-| golang.org/x/image/webp | Lossy | 17.8 ms | 10.8 | 2.5 MB | 13 |
-| gen2brain/webp (WASM) | Lossy | 21.9 ms | 11.6 | 608 KB | 40 |
-| chai2010/webp (CGo) | Lossless | **19.5 ms** | 91.5 | 10.2 MB | 30 |
-| **deepteams/webp** (Pure Go) | Lossless | **20.0 ms** | 91.3 | 7.9 MB | 226 |
-| gen2brain/webp (WASM) | Lossless | 34.3 ms | 60.2 | 4.4 MB | 46 |
-| nativewebp (Pure Go) | Lossless | 36.7 ms | 54.9 | 6.1 MB | 50 |
-| golang.org/x/image/webp | Lossless | 39.4 ms | 45.2 | 6.8 MB | 966 |
+| **deepteams/webp** (Pure Go) | Lossy | **9.3 ms** | 20.7 | 2.5 MB | 7 |
+| chai2010/webp (CGo) | Lossy | 9.6 ms | 21.8 | 6.4 MB | 23 |
+| golang.org/x/image/webp | Lossy | 18.4 ms | 10.5 | 2.5 MB | 13 |
+| gen2brain/webp (WASM) | Lossy | 22.2 ms | 11.4 | 608 KB | 40 |
+| **deepteams/webp** (Pure Go) | Lossless | **17.0 ms** | 107.3 | 8.3 MB | 225 |
+| chai2010/webp (CGo) | Lossless | 19.2 ms | 91.3 | 10.2 MB | 30 |
+| gen2brain/webp (WASM) | Lossless | 34.0 ms | 60.4 | 4.4 MB | 46 |
+| nativewebp (Pure Go) | Lossless | 35.6 ms | 56.5 | 6.1 MB | 50 |
+| golang.org/x/image/webp | Lossless | 38.7 ms | 47.3 | 6.8 MB | 966 |
 
 In a decode loop, [`DecodeReuse`](#decode-in-a-loop-zero-allocation) drops per-decode allocations from megabytes to a few KB (see `BenchmarkDecodeLossyReuse` / `BenchmarkDecodeLosslessReuse`).
 
